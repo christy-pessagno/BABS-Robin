@@ -67,6 +67,11 @@
                      background:var(--paper); color:var(--ink); font-weight:600; width:100%; }
 
   section.round { margin-bottom:22px; }
+  .now { display:none; background:var(--optic); color:var(--ink); font-size:11px; font-weight:800; text-transform:uppercase;
+         letter-spacing:.05em; padding:3px 8px; border-radius:20px; margin-left:8px; vertical-align:middle; font-family:var(--body); }
+  section.round.current .now { display:inline-block; }
+  section.round.current .match { border:2px solid var(--green); box-shadow:0 2px 10px rgba(31,107,68,.14); }
+  section.round.done .match { opacity:.55; }
   .round-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:9px; gap:10px; }
   .round-head h2 { font-family:var(--display); font-weight:800; font-size:17px; letter-spacing:-0.01em; white-space:nowrap; }
   .bye { font-size:12px; color:var(--sub); font-weight:600; text-align:right; }
@@ -89,6 +94,8 @@
 
   .reset { display:flex; align-items:center; gap:8px; margin:6px auto 0; background:none; border:1px solid var(--line);
            color:var(--sub); border-radius:10px; padding:9px 16px; font-weight:600; font-size:13.5px; }
+  .reset.armed { border-color:#A63D2F; background:#A63D2F; color:#fff; font-weight:700; }
+  .reset.armed svg { stroke:#fff; }
 
   .table { background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
   .trow { display:grid; grid-template-columns:34px 1fr 44px 44px 52px; align-items:center; padding:13px 14px; border-bottom:1px solid var(--line); }
@@ -477,6 +484,27 @@
            "aria-label='" + esc(teams[team]) + " score' data-a='" + g.a + "' data-b='" + g.b + "' data-score='" + team + "' " +
            "value='" + (typeof s[team] === "number" ? s[team] : "") + "' />";
   }
+  // The round in play is the earliest one with a game still missing a winner.
+  // Earlier rounds are done; later ones are upcoming.
+  function currentRound() {
+    for (var i = 0; i < schedule.length; i++) {
+      var g = schedule[i];
+      if (results[pairKey(g.a, g.b)] === undefined) return g.round;
+    }
+    return null;
+  }
+  function roundState(round) {
+    var cur = currentRound();
+    if (cur === null || round < cur) return "done";
+    return round === cur ? "current" : "";
+  }
+  function refreshRoundStates() {
+    document.querySelectorAll("section.round").forEach(function (s) {
+      var state = roundState(parseInt(s.getAttribute("data-round"), 10));
+      s.classList.toggle("current", state === "current");
+      s.classList.toggle("done", state === "done");
+    });
+  }
   function progressText() { return playedCount() + "/" + totalGames() + " played"; }
 
   // ---- Render ----
@@ -523,7 +551,8 @@
       // Rounds
       roundsList().forEach(function (round) {
         var resting = restingFor(round);
-        html += "<section class='round'><div class='round-head'><h2>Round " + round + "</h2>";
+        html += "<section class='round " + roundState(round) + "' data-round='" + round + "'><div class='round-head'>" +
+                "<h2>Round " + round + "<span class='now'>Now playing</span></h2>";
         if (resting.length) html += "<span class='bye'>Resting: " + esc(resting.join(", ")) + "</span>";
         html += "</div>";
         schedule.forEach(function (g) {
@@ -634,6 +663,7 @@
         grid.innerHTML = teamButtonsHtml(a, b);
         bindTeamButtons(grid);
         app.querySelector(".progress").textContent = progressText();
+        refreshRoundStates();
       });
     });
 
@@ -650,8 +680,17 @@
     });
 
     var reset = app.querySelector("[data-action='reset']");
+    // Two-tap confirm in the page itself (pop-up dialogs are unreliable in
+    // home-screen apps): the first tap arms the button for a few seconds.
     if (reset) reset.addEventListener("click", function () {
-      if (window.confirm("Clear all recorded scores?")) { results = {}; scores = {}; save(); render(); }
+      if (reset.classList.contains("armed")) { results = {}; scores = {}; save(); render(); return; }
+      reset.classList.add("armed");
+      reset.innerHTML = ICON.reset + " Tap again to clear all scores";
+      setTimeout(function () {
+        if (!reset.isConnected) return;
+        reset.classList.remove("armed");
+        reset.innerHTML = ICON.reset + " Reset scores";
+      }, 4000);
     });
 
     // Live-edit names without re-render (keeps input focus)
@@ -667,6 +706,17 @@
   load();
   rebuild();
   render();
+  // On opening mid-session, jump to the round in play (just below the
+  // sticky header). Waits for the page to finish loading so fonts and the
+  // browser's own scroll restore don't move it afterwards.
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+  window.addEventListener("load", function () {
+    var openRound = currentRound();
+    if (tab !== "schedule" || openRound === null || openRound <= 1) return;
+    var section = document.querySelector("section.round[data-round='" + openRound + "']");
+    var header = document.querySelector("header");
+    window.scrollTo(0, section.getBoundingClientRect().top + window.scrollY - header.offsetHeight - 12);
+  });
 })();
 </script>
 </body>
