@@ -139,18 +139,24 @@
     return rounds;
   }
 
-  // Pack each round-robin round onto the available courts (a round may split
-  // into several time slots when there are more games than courts).
+  // Pack the round-robin games onto the available courts. Each round fills
+  // every court it can, pulling forward the earliest remaining game whose
+  // teams are both free, so no court sits empty while games are left.
   function buildSchedule(n, c) {
-    var ideal = generateRounds(n), sched = [], displayRound = 0;
-    ideal.forEach(function (pairs) {
-      for (var i = 0; i < pairs.length; i += c) {
-        displayRound++;
-        pairs.slice(i, i + c).forEach(function (p, ci) {
-          sched.push({ round: displayRound, court: ci + 1, a: p[0], b: p[1] });
-        });
-      }
-    });
+    var queue = [].concat.apply([], generateRounds(n)), sched = [], displayRound = 0;
+    while (queue.length) {
+      displayRound++;
+      var busy = {}, court = 0, later = [];
+      queue.forEach(function (p) {
+        if (court < c && !busy[p[0]] && !busy[p[1]]) {
+          busy[p[0]] = busy[p[1]] = 1;
+          sched.push({ round: displayRound, court: ++court, a: p[0], b: p[1] });
+        } else {
+          later.push(p);
+        }
+      });
+      queue = later;
+    }
     return sched;
   }
 
