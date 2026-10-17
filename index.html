@@ -74,19 +74,24 @@
   .match { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; margin-bottom:10px; }
   .court { font-size:11.5px; font-weight:700; color:var(--green); text-transform:uppercase; letter-spacing:.05em; margin-bottom:9px; }
   .vs-grid { display:grid; grid-template-columns:1fr auto 1fr; align-items:stretch; gap:8px; }
-  .vs { display:flex; align-items:center; font-weight:800; font-size:12px; color:var(--sub); font-family:var(--display); }
+  .vs { display:flex; align-items:center; justify-content:center; width:18px; font-weight:800; font-size:12px; color:var(--sub); font-family:var(--display); }
   .team-btn { border:1.5px solid var(--line); background:#fff; color:var(--ink); border-radius:11px; padding:12px 8px;
               font-weight:700; font-size:15px; display:flex; align-items:center; justify-content:center; gap:6px;
               text-align:center; transition:all .16s ease; min-height:48px; line-height:1.15; }
   .team-btn span { overflow:hidden; text-overflow:ellipsis; }
   .team-btn.winner { border:2px solid var(--green); background:var(--green); color:#fff; animation:pop .22s ease; }
   .team-btn.loser { color:var(--loss); }
+  .score-row { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:8px; margin-top:8px; }
+  .score-row .dash { width:18px; text-align:center; color:var(--sub); font-weight:700; }
+  .score-row input { width:100%; border:1px solid var(--line); border-radius:9px; padding:7px 8px; font-size:16px;
+                     background:var(--paper); color:var(--ink); font-weight:700; text-align:center; font-family:var(--body); }
+  .score-row input::placeholder { color:#bdb6a2; font-weight:600; font-size:13px; }
 
   .reset { display:flex; align-items:center; gap:8px; margin:6px auto 0; background:none; border:1px solid var(--line);
            color:var(--sub); border-radius:10px; padding:9px 16px; font-weight:600; font-size:13.5px; }
 
   .table { background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
-  .trow { display:grid; grid-template-columns:34px 1fr 52px 52px; align-items:center; padding:13px 14px; border-bottom:1px solid var(--line); }
+  .trow { display:grid; grid-template-columns:34px 1fr 44px 44px 52px; align-items:center; padding:13px 14px; border-bottom:1px solid var(--line); }
   .trow:last-child { border-bottom:none; }
   .thead { padding:11px 14px; font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--sub); }
   .trow.top { background:rgba(216,224,0,.16); }
@@ -95,6 +100,7 @@
   .tname { font-weight:700; font-size:15px; display:flex; align-items:center; gap:6px; }
   .twin { text-align:center; font-weight:800; font-size:17px; font-family:var(--display); }
   .tloss { text-align:center; font-weight:600; font-size:15px; color:var(--loss); }
+  .tdiff { text-align:center; font-weight:600; font-size:14px; color:var(--sub); }
   .note { font-size:12.5px; color:var(--sub); margin-top:12px; text-align:center; }
   svg { display:block; }
 </style>
@@ -116,6 +122,7 @@
   for (var i = 0; i < DEFAULT_TEAM_COUNT; i++) teams.push("Team " + (i + 1));
   var courts = DEFAULT_COURTS;
   var results = {};               // keyed "min-max" (team indices) -> winning team index
+  var scores = {};                // optional, keyed "min-max" -> { teamIndex: points }
   var schedule = [];              // [{round, court, a, b}]
   var tab = "schedule";
   var setupOpen = false;
@@ -168,6 +175,15 @@
     var valid = {};
     schedule.forEach(function (g) { valid[pairKey(g.a, g.b)] = 1; });
     Object.keys(results).forEach(function (key) { if (!valid[key]) delete results[key]; });
+    Object.keys(scores).forEach(function (key) { if (!valid[key]) delete scores[key]; });
+  }
+
+  // Both teams' points for a game, or null if the score isn't fully entered.
+  function scoreOf(a, b) {
+    var s = scores[pairKey(a, b)];
+    if (!s || typeof s[a] !== "number" || typeof s[b] !== "number") return null;
+    var out = {}; out[a] = s[a]; out[b] = s[b];
+    return out;
   }
 
   // ---- App icon + manifest (for "Add to Home Screen") ----
@@ -201,11 +217,12 @@
         if (Array.isArray(d.teams) && d.teams.length >= MIN_TEAMS && d.teams.length <= MAX_TEAMS) teams = d.teams;
         if (typeof d.courts === "number" && d.courts >= MIN_COURTS && d.courts <= MAX_COURTS) courts = d.courts;
         if (d.results && typeof d.results === "object") results = d.results;
+        if (d.scores && typeof d.scores === "object") scores = d.scores;
       }
     } catch (e) {}
   }
   function save() {
-    try { localStorage.setItem(KEY, JSON.stringify({ teams: teams, courts: courts, results: results })); } catch (e) {}
+    try { localStorage.setItem(KEY, JSON.stringify({ teams: teams, courts: courts, results: results, scores: scores })); } catch (e) {}
   }
 
   // ---- Helpers ----
@@ -230,19 +247,63 @@
     var t = teams.length;
     return (t * (t - 1)) / 2;
   }
+  // Split rows into runs that share the same value of fn(row), best (highest) first.
+  function partition(rows, fn) {
+    var sorted = rows.slice().sort(function (x, y) { return (fn(y) - fn(x)) || (x.idx - y.idx); });
+    var out = [];
+    sorted.forEach(function (r) {
+      var last = out[out.length - 1];
+      if (last && fn(last[0]) === fn(r)) last.push(r); else out.push([r]);
+    });
+    return out;
+  }
+
+  // Order teams tied on record: head-to-head among them (re-applied to any
+  // smaller group still tied), then point difference. Returns tiers of teams
+  // that remain tied.
+  function breakTie(group) {
+    if (group.length < 2) return [group];
+    var inGroup = {};
+    group.forEach(function (r) { inGroup[r.idx] = 1; });
+    group.forEach(function (r) {
+      r.h2h = 0;
+      schedule.forEach(function (g) {
+        var other = g.a === r.idx ? g.b : (g.b === r.idx ? g.a : -1);
+        if (other !== -1 && inGroup[other] && results[pairKey(g.a, g.b)] === r.idx) r.h2h++;
+      });
+    });
+    var byH2h = partition(group, function (r) { return r.h2h; });
+    if (byH2h.length > 1) return [].concat.apply([], byH2h.map(breakTie));
+    return partition(group, function (r) { return r.diff; });
+  }
+
   function standings() {
-    return teams.map(function (name, idx) {
-      var wins = 0, done = 0;
+    var rows = teams.map(function (name, idx) {
+      var wins = 0, done = 0, diff = 0, scored = 0;
       schedule.forEach(function (g) {
         if (g.a === idx || g.b === idx) {
           var w = results[pairKey(g.a, g.b)];
           if (w !== undefined) { done++; if (w === idx) wins++; }
+          var s = scoreOf(g.a, g.b);
+          if (s) { scored++; diff += s[idx] - s[idx === g.a ? g.b : g.a]; }
         }
       });
-      return { idx: idx, name: name, wins: wins, played: done, losses: done - wins };
-    }).sort(function (x, y) {
-      return (y.wins - x.wins) || (x.losses - y.losses) || (x.idx - y.idx);
+      return { idx: idx, name: name, wins: wins, played: done, losses: done - wins, diff: diff, scored: scored };
     });
+    var byRecord = [];
+    partition(rows, function (r) { return r.wins; }).forEach(function (sameWins) {
+      byRecord = byRecord.concat(partition(sameWins, function (r) { return -r.losses; }));
+    });
+    var out = [], rank = 1;
+    byRecord.forEach(function (group) {
+      breakTie(group).forEach(function (tier) {
+        tier.forEach(function (r) { r.rank = rank; r.tied = tier.length > 1; out.push(r); });
+        rank += tier.length;
+      });
+    });
+    // Before any game is played, just list teams in order rather than all tied.
+    if (playedCount() === 0) out.forEach(function (r, i) { r.rank = i + 1; r.tied = false; });
+    return out;
   }
   function roundsList() {
     var seen = {}, out = [];
@@ -265,6 +326,23 @@
     "</div>";
   }
 
+  function teamButtonsHtml(a, b) {
+    var w = results[pairKey(a, b)];
+    var hasW = w !== undefined;
+    function btn(team) {
+      var cls = w === team ? "winner" : (hasW ? "loser" : "");
+      return "<button class='team-btn " + cls + "' data-a='" + a + "' data-b='" + b + "' data-team='" + team + "'>" +
+               (w === team ? ICON.check : "") + "<span>" + esc(teams[team]) + "</span></button>";
+    }
+    return btn(a) + "<div class='vs'>vs</div>" + btn(b);
+  }
+  function scoreInput(g, team, s) {
+    return "<input type='text' inputmode='numeric' pattern='[0-9]*' maxlength='2' placeholder='Score' " +
+           "aria-label='" + esc(teams[team]) + " score' data-a='" + g.a + "' data-b='" + g.b + "' data-score='" + team + "' " +
+           "value='" + (typeof s[team] === "number" ? s[team] : "") + "' />";
+  }
+  function progressText() { return playedCount() + "/" + totalGames() + " played"; }
+
   // ---- Render ----
   function render() {
     var played = playedCount();
@@ -273,7 +351,7 @@
 
     html += "<header>";
     html +=   "<div class='head-row'><h1>Round Robin</h1>" +
-              "<span class='progress'>" + played + "/" + total + " played</span></div>";
+              "<span class='progress'>" + progressText() + "</span></div>";
     html +=   "<div class='subtitle'>" + teams.length + " teams &middot; " + courts +
               (courts === 1 ? " court" : " courts") + " &middot; everyone plays everyone once</div>";
     html +=   "<div class='tabs'>" +
@@ -314,17 +392,11 @@
         html += "</div>";
         schedule.forEach(function (g) {
           if (g.round !== round) return;
-          var w = results[pairKey(g.a, g.b)];
-          var hasW = w !== undefined;
-          var aCls = w === g.a ? "winner" : (hasW ? "loser" : "");
-          var bCls = w === g.b ? "winner" : (hasW ? "loser" : "");
-          html += "<div class='match'><div class='court'>Court " + g.court + "</div><div class='vs-grid'>";
-          html +=   "<button class='team-btn " + aCls + "' data-a='" + g.a + "' data-b='" + g.b + "' data-team='" + g.a + "'>" +
-                      (w === g.a ? ICON.check : "") + "<span>" + esc(teams[g.a]) + "</span></button>";
-          html +=   "<div class='vs'>vs</div>";
-          html +=   "<button class='team-btn " + bCls + "' data-a='" + g.a + "' data-b='" + g.b + "' data-team='" + g.b + "'>" +
-                      (w === g.b ? ICON.check : "") + "<span>" + esc(teams[g.b]) + "</span></button>";
-          html += "</div></div>";
+          var s = scores[pairKey(g.a, g.b)] || {};
+          html += "<div class='match'><div class='court'>Court " + g.court + "</div>";
+          html +=   "<div class='vs-grid' data-key='" + pairKey(g.a, g.b) + "'>" + teamButtonsHtml(g.a, g.b) + "</div>";
+          html +=   "<div class='score-row'>" + scoreInput(g, g.a, s) + "<span class='dash'>&ndash;</span>" + scoreInput(g, g.b, s) + "</div>";
+          html += "</div>";
         });
         html += "</section>";
       });
@@ -335,20 +407,27 @@
       var rows = standings();
       html += "<div class='pane'><div class='table'>";
       html +=   "<div class='trow thead'><span>#</span><span>Team</span>" +
-                "<span style='text-align:center'>Won</span><span style='text-align:center'>Lost</span></div>";
-      rows.forEach(function (s, rank) {
-        var top = rank === 0 && s.played > 0 && s.wins > 0;
+                "<span style='text-align:center'>Won</span><span style='text-align:center'>Lost</span>" +
+                "<span style='text-align:center'>+/&minus;</span></div>";
+      var anyTied = false;
+      rows.forEach(function (s) {
+        var top = s.rank === 1 && s.played > 0 && s.wins > 0;
+        if (s.tied) anyTied = true;
+        var diff = s.scored === 0 ? "&ndash;" : (s.diff > 0 ? "+" + s.diff : (s.diff < 0 ? "&minus;" + (-s.diff) : "0"));
         html += "<div class='trow " + (top ? "top" : "") + "'>" +
-                  "<span class='rank'>" + (rank + 1) + "</span>" +
+                  "<span class='rank'>" + (s.tied ? "T" : "") + s.rank + "</span>" +
                   "<span class='tname'>" + esc(s.name) + (top ? ICON.trophy : "") + "</span>" +
                   "<span class='twin'>" + s.wins + "</span>" +
-                  "<span class='tloss'>" + s.losses + "</span></div>";
+                  "<span class='tloss'>" + s.losses + "</span>" +
+                  "<span class='tdiff'>" + diff + "</span></div>";
       });
       html += "</div>";
       var left = total - played;
       html += "<p class='note'>" + (left === 0
         ? "All games played &mdash; final standings."
         : (left + " game" + (left === 1 ? "" : "s") + " left to play.")) + "</p>";
+      html += "<p class='note'>Ties go to head-to-head, then point difference (+/&minus;) from games with a score entered." +
+              (anyTied ? " T = still tied." : "") + "</p>";
       html += "</div>";
     }
 
@@ -369,6 +448,27 @@
     rebuild(); save(); render();
   }
 
+  // Tapping a team records (or clears) the win. A typed score that disagrees
+  // with the tapped winner is cleared.
+  function bindTeamButtons(root) {
+    root.querySelectorAll(".team-btn").forEach(function (b) {
+      b.addEventListener("click", function () {
+        var a = parseInt(b.getAttribute("data-a"), 10);
+        var bb = parseInt(b.getAttribute("data-b"), 10);
+        var team = parseInt(b.getAttribute("data-team"), 10);
+        var key = pairKey(a, bb);
+        var other = team === a ? bb : a;
+        var s = scoreOf(a, bb);
+        if (results[key] === team) { delete results[key]; delete scores[key]; }
+        else {
+          results[key] = team;
+          if (s && s[team] <= s[other]) delete scores[key];
+        }
+        save(); render();
+      });
+    });
+  }
+
   function bind() {
     var app = document.getElementById("app");
 
@@ -376,14 +476,28 @@
       b.addEventListener("click", function () { tab = b.getAttribute("data-tab"); render(); });
     });
 
-    app.querySelectorAll(".team-btn").forEach(function (b) {
-      b.addEventListener("click", function () {
-        var a = parseInt(b.getAttribute("data-a"), 10);
-        var bb = parseInt(b.getAttribute("data-b"), 10);
-        var team = parseInt(b.getAttribute("data-team"), 10);
-        var key = pairKey(a, bb);
-        if (results[key] === team) delete results[key]; else results[key] = team;
-        save(); render();
+    bindTeamButtons(app);
+
+    // Typing a score updates the winner as soon as both scores differ. Only
+    // that game's buttons are redrawn, so the score boxes keep focus.
+    app.querySelectorAll("[data-score]").forEach(function (inp) {
+      inp.addEventListener("input", function () {
+        var a = parseInt(inp.getAttribute("data-a"), 10);
+        var b = parseInt(inp.getAttribute("data-b"), 10);
+        var team = parseInt(inp.getAttribute("data-score"), 10);
+        var key = pairKey(a, b);
+        var v = inp.value.replace(/\D/g, "").slice(0, 2);
+        if (v !== inp.value) inp.value = v;
+        var s = scores[key] || (scores[key] = {});
+        if (v === "") delete s[team]; else s[team] = parseInt(v, 10);
+        if (!Object.keys(s).length) delete scores[key];
+        var full = scoreOf(a, b);
+        if (full && full[a] !== full[b]) results[key] = full[a] > full[b] ? a : b;
+        save();
+        var grid = app.querySelector(".vs-grid[data-key='" + key + "']");
+        grid.innerHTML = teamButtonsHtml(a, b);
+        bindTeamButtons(grid);
+        app.querySelector(".progress").textContent = progressText();
       });
     });
 
@@ -401,7 +515,7 @@
 
     var reset = app.querySelector("[data-action='reset']");
     if (reset) reset.addEventListener("click", function () {
-      if (window.confirm("Clear all recorded scores?")) { results = {}; save(); render(); }
+      if (window.confirm("Clear all recorded scores?")) { results = {}; scores = {}; save(); render(); }
     });
 
     // Live-edit names without re-render (keeps input focus)
